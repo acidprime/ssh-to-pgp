@@ -33,21 +33,24 @@ func SSHPrivateKeyToPGP(sshPrivateKey []byte, name string, comment string, email
 		return nil, fmt.Errorf("failed to parse private ssh key: %w", err)
 	}
 
-	// Let's make keys reproducible
-	timeNull := time.Unix(0, 0)
+	// Use current time for creation time
+	creationTime := time.Now()
 
 	gpgKey := &openpgp.Entity{
-		PrimaryKey: packet.NewRSAPublicKey(timeNull, &key.PublicKey),
-		PrivateKey: packet.NewRSAPrivateKey(timeNull, key),
+		PrimaryKey: packet.NewRSAPublicKey(creationTime, &key.PublicKey),
+		PrivateKey: packet.NewRSAPrivateKey(creationTime, key),
 		Identities: make(map[string]*openpgp.Identity),
 	}
 	uid := packet.NewUserId(name, comment, email)
+	if uid == nil {
+		return nil, fmt.Errorf("error creating User ID")
+	}
 	isPrimaryID := true
 	gpgKey.Identities[uid.Id] = &openpgp.Identity{
 		Name:   uid.Id,
 		UserId: uid,
 		SelfSignature: &packet.Signature{
-			CreationTime:              timeNull,
+			CreationTime:              creationTime,
 			SigType:                   packet.SigTypePositiveCert,
 			PubKeyAlgo:                packet.PubKeyAlgoRSA,
 			Hash:                      crypto.SHA256,
@@ -60,7 +63,14 @@ func SSHPrivateKeyToPGP(sshPrivateKey []byte, name string, comment string, email
 			IssuerKeyId:               &gpgKey.PrimaryKey.KeyId,
 		},
 	}
-	err = gpgKey.Identities[uid.Id].SelfSignature.SignUserId(uid.Id, gpgKey.PrimaryKey, gpgKey.PrivateKey, nil)
+
+	// Pass a config with the creation time
+	config := &packet.Config{
+		Time: func() time.Time { return creationTime },
+	}
+
+	// Sign the User ID
+	err = gpgKey.Identities[uid.Id].SelfSignature.SignUserId(uid.Id, gpgKey.PrimaryKey, gpgKey.PrivateKey, config)
 	if err != nil {
 		return nil, err
 	}
