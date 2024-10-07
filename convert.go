@@ -12,6 +12,24 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const (
+	// Hash Algorithm Numbers (as per RFC 4880)
+	HashSHA256 = 8
+	HashSHA384 = 9
+	HashSHA512 = 10
+	HashSHA224 = 11
+
+	// Symmetric Key Algorithm Numbers
+	CipherAES128 = 7
+	CipherAES192 = 8
+	CipherAES256 = 9
+
+	// Compression Algorithm Numbers
+	CompressionNone = 0
+	CompressionZIP  = 1
+	CompressionZLIB = 2
+)
+
 func parsePrivateKey(sshPrivateKey []byte) (*rsa.PrivateKey, error) {
 	privateKey, err := ssh.ParseRawPrivateKey(sshPrivateKey)
 	if err != nil {
@@ -33,7 +51,6 @@ func SSHPrivateKeyToPGP(sshPrivateKey []byte, name string, comment string, email
 		return nil, fmt.Errorf("failed to parse private ssh key: %w", err)
 	}
 
-	// Use current time for creation time
 	creationTime := time.Now()
 
 	gpgKey := &openpgp.Entity{
@@ -45,34 +62,57 @@ func SSHPrivateKeyToPGP(sshPrivateKey []byte, name string, comment string, email
 	if uid == nil {
 		return nil, fmt.Errorf("error creating User ID")
 	}
+
 	isPrimaryID := true
-	gpgKey.Identities[uid.Id] = &openpgp.Identity{
-		Name:   uid.Id,
-		UserId: uid,
-		SelfSignature: &packet.Signature{
-			CreationTime:              creationTime,
-			SigType:                   packet.SigTypePositiveCert,
-			PubKeyAlgo:                packet.PubKeyAlgoRSA,
-			Hash:                      crypto.SHA256,
-			IsPrimaryId:               &isPrimaryID,
-			FlagsValid:                true,
-			FlagSign:                  true,
-			FlagCertify:               true,
-			FlagEncryptStorage:        true,
-			FlagEncryptCommunications: true,
-			IssuerKeyId:               &gpgKey.PrimaryKey.KeyId,
+	sig := &packet.Signature{
+		Version:                   4,
+		CreationTime:              creationTime,
+		SigType:                   packet.SigTypePositiveCert,
+		PubKeyAlgo:                packet.PubKeyAlgoRSA,
+		Hash:                      crypto.SHA256,
+		IssuerKeyId:               &gpgKey.PrimaryKey.KeyId,
+		IssuerFingerprint:         gpgKey.PrimaryKey.Fingerprint,
+		IsPrimaryId:               &isPrimaryID,
+		FlagsValid:                true,
+		FlagSign:                  true,
+		FlagCertify:               true,
+		FlagEncryptCommunications: true,
+		FlagEncryptStorage:        true,
+		PreferredSymmetric: []uint8{
+			CipherAES256,
+			CipherAES192,
+			CipherAES128,
 		},
+		PreferredHash: []uint8{
+			HashSHA256,
+			HashSHA384,
+			HashSHA512,
+			HashSHA224,
+		},
+		PreferredCompression: []uint8{
+			CompressionZLIB,
+			CompressionZIP,
+			CompressionNone,
+		},
+		// Remove the Features field if it's not defined
+		// Features: []uint8{1}, // Modification detection
 	}
 
-	// Pass a config with the creation time
+	gpgKey.Identities[uid.Id] = &openpgp.Identity{
+		Name:          uid.Id,
+		UserId:        uid,
+		SelfSignature: sig,
+	}
+
 	config := &packet.Config{
-		Time: func() time.Time { return creationTime },
+		DefaultHash: crypto.SHA256,
+		Time:        func() time.Time { return creationTime },
 	}
 
 	// Sign the User ID
-	err = gpgKey.Identities[uid.Id].SelfSignature.SignUserId(uid.Id, gpgKey.PrimaryKey, gpgKey.PrivateKey, config)
+	err = sig.SignUserId(uid.Id, gpgKey.PrimaryKey, gpgKey.PrivateKey, config)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error signing user ID: %w", err)
 	}
 
 	return gpgKey, nil
